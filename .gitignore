@@ -6,6 +6,7 @@ build/
 dist/
 *.egg-info/
 .DS_Store
+*.app/
 work/
 private/
 *.local.json

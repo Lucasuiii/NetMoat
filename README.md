@@ -108,6 +108,55 @@ sudo .venv/bin/netmoat probe \
 
 ## 开机服务（主动选择安装）
 
+### 可选图形控制台
+
+控制台采用原生 SwiftUI，包含概览、保护模块和设置。需要 macOS 14+ 和可用的 Xcode 命令行开发工具。
+运行下面的构建命令，会在个人“应用程序”目录生成唯一的 `NetMoat.app`：
+
+```sh
+python3 scripts/build_controller.py
+```
+
+控制台支持查看状态、开启、关闭和卸载，以及添加、编辑、启停和移除独立的服务保护模块。
+管理服务时通过系统管理员认证。首次读取不会自动访问目标服务。
+它只控制已经安装的服务，首次安装仍使用下方的命令。不要再把控制台复制到其他目录，避免应用列表出现重复入口。
+已安装本项目生成的新控制台时，可用 `--replace` 更新；构建命令会检查应用标识，拒绝覆盖其他应用。
+
+### 可扩展保护模块
+
+每个模块保存一个网站或服务的名字、精确主机名和 IP / CIDR，拥有独立开关。
+多个启用模块取并集，共享目标只加载一次；关闭一个模块不会移除其他模块仍需要的地址。
+主机名通过公共 DNS 获取地址，并受前文 IP 层与共享地址限制，不支持通配域名或按应用识别。
+
+```json
+{
+  "interfaces": ["en0"],
+  "targets": [],
+  "dns": {"hosts": [], "proxy": "http://127.0.0.1:8080", "refresh_seconds": 300},
+  "modules": [
+    {"id": "work-service", "name": "工作服务", "enabled": true,
+     "targets": ["192.0.2.0/24"], "hosts": ["service.example.com"]}
+  ]
+}
+```
+
+主机与代理端口仅为格式示例。旧的平面配置仍可使用；控制台将其展示为一个“现有保护”模块，首次保存时平滑转换。
+所有模块都关闭时，模块目标表为空，不应视为正在保护任何服务。只有服务配置支持空目标；普通临时会话仍要求至少一个目标。
+
+```sh
+# 读取配置与现场状态，不探测目标站点
+sudo /usr/local/bin/netmoat service snapshot
+
+# 验证并应用配置；保留上一份配置，超时失败时恢复
+sudo /usr/local/bin/netmoat service configure --config policy.json
+```
+
+运行中的服务每 10 秒读取配置变化，在原子锚点规则加载时更新目标，不先清空原有规则。
+更改后等待配置摘要与现场读回匹配；失败不应视为新配置已经受到保护。
+主机解析尚不可用时会显示待更新；服务暂停时只保存配置，重新开启后生效。
+
+### 安装与管理
+
 先审查自己的配置。下面的安装命令会立即启用规则，并配置下次开机启动：
 
 ```sh
@@ -183,7 +232,7 @@ python3 -m unittest discover -s tests -v
 
 单元测试覆盖配置注入、目标表核验、受保护地址探测拒绝、缺失父锚点、清理失败和 PF 引用恢复。CI 不执行特权网络操作；真实网络验证需要在一台 Mac 上显式运行 `probe`。
 
-English: NetMoat is a small macOS PF policy and verification framework. It accepts explicit interfaces and literal IP/CIDR targets, renders rules, runs temporary sessions, and checks blocking with user-selected decoys. An opt-in launchd service supports startup, crash recovery, live rule checks, stop/uninstall, and optional proxy-only DNS refresh. It ships no service-specific rules. See the configuration and commands above; all CLI help is available through `--help`.
+English: NetMoat is a small macOS PF policy and verification framework with an optional native SwiftUI controller. Independent protection modules combine explicit IP/CIDR targets and exact hostnames, with individual enable switches. An opt-in launchd service supports startup, crash recovery, live rule checks, configuration reload, stop/uninstall, and optional proxy-only DNS refresh. It ships no service-specific rules. See the configuration and commands above; all CLI help is available through `--help`.
 
 ## 许可证
 

@@ -42,7 +42,7 @@ class Policy:
         return cls.parse(json.loads(Path(filename).read_text()))
 
     @classmethod
-    def parse(cls, data):
+    def parse(cls, data, allow_empty=False):
         if not isinstance(data, dict) or set(data) != {"interfaces", "targets"}:
             raise ValueError("Policy must contain only interfaces and targets")
         interfaces, targets = data["interfaces"], data["targets"]
@@ -50,8 +50,8 @@ class Policy:
             raise ValueError("Provide 1 to 32 physical en interfaces")
         if any(not isinstance(i, str) or not re.fullmatch(r"en\d{1,4}", i) for i in interfaces):
             raise ValueError("Interfaces must be explicit physical en names; tunnels are excluded")
-        if not isinstance(targets, list) or not 1 <= len(targets) <= 4096:
-            raise ValueError("Provide 1 to 4096 literal IP addresses or CIDRs")
+        if not isinstance(targets, list) or not (0 if allow_empty else 1) <= len(targets) <= 4096:
+            raise ValueError("Provide a valid list of up to 4096 literal IP addresses or CIDRs")
         networks = []
         for target in targets:
             if not isinstance(target, str) or not re.fullmatch(r"[0-9A-Fa-f:.]+(?:/\d{1,3})?", target):
@@ -70,7 +70,7 @@ class Policy:
 
     def with_decoys(self, addresses):
         return Policy.parse({"interfaces": list(self.interfaces),
-                             "targets": list(self.targets) + list(addresses)})
+                             "targets": list(self.targets) + list(addresses)}, allow_empty=True)
 
 
 def render(policy):
@@ -354,7 +354,8 @@ def main(argv=None):
     service = sub.add_parser("service", help="Install and manage the optional startup service")
     actions = service.add_subparsers(dest="service_action", required=True)
     actions.add_parser("install").add_argument("--config", required=True)
-    for action in ["start", "stop", "status", "uninstall", "run"]:
+    actions.add_parser("configure").add_argument("--config", required=True)
+    for action in ["start", "stop", "status", "snapshot", "uninstall", "run"]:
         actions.add_parser(action)
     args = parser.parse_args(argv)
     try:

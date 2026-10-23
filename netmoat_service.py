@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import fcntl
+import hashlib
 import ipaddress
 import json
 import os
@@ -82,21 +83,40 @@ def lock(wait=0):
 
 class Config:
     def __init__(self, data):
-        if not isinstance(data, dict) or set(data) - {"interfaces", "targets", "dns"}:
-            raise ValueError("Service config accepts interfaces, targets, and optional dns")
-        self.policy = core.Policy.parse({k: data.get(k) for k in ["interfaces", "targets"]})
-        self.dns = data.get("dns")
+        if not isinstance(data, dict) or set(data) - {"interfaces", "targets", "dns", "modules"}:
+            raise ValueError("Service config accepts interfaces, targets, optional dns and modules")
+        self.data = json.loads(json.dumps(data))
+        base = core.Policy.parse({k: data.get(k) for k in ["interfaces", "targets"]}, allow_empty=True)
+        self.modules = data.get("modules", [])
+        if not isinstance(self.modules, list) or len(self.modules) > 64:
+            raise ValueError("Provide up to 64 protection modules")
+        ids, targets, hosts = set(), list(base.targets), []
+        for module in self.modules:
+            if not isinstance(module, dict) or set(module) != {"id", "name", "enabled", "targets", "hosts"}:
+                raise ValueError("Each module requires id, name, enabled, targets, and hosts")
+            identity, name = module["id"], module["name"]
+            if not isinstance(identity, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", identity) or identity in ids:
+                raise ValueError("Module IDs must be unique lowercase identifiers")
+            if not isinstance(name, str) or not name.strip() or len(name) > 80 or any(ord(c) < 32 for c in name):
+                raise ValueError("Module names must be 1 to 80 visible characters")
+            if type(module["enabled"]) is not bool:
+                raise ValueError("Module enabled must be boolean")
+            ids.add(identity)
+            policy = core.Policy.parse({"interfaces": list(base.interfaces), "targets": module["targets"]}, allow_empty=True)
+            self.validate_hosts(module["hosts"])
+            if not policy.targets and not module["hosts"]:
+                raise ValueError("A module requires at least one target or exact hostname")
+            if module["enabled"]:
+                targets.extend(policy.targets)
+                hosts.extend(module["hosts"])
+        self.policy = core.Policy.parse({"interfaces": list(base.interfaces), "targets": list(dict.fromkeys(targets))}, allow_empty=True)
+        self.dns = json.loads(json.dumps(data.get("dns")))
         if self.dns is not None:
             if not isinstance(self.dns, dict) or set(self.dns) != {"hosts", "proxy", "refresh_seconds"}:
                 raise ValueError("dns requires hosts, proxy, and refresh_seconds")
-            hosts = self.dns["hosts"]
-            if not isinstance(hosts, list) or not 1 <= len(hosts) <= 32:
-                raise ValueError("Supply 1 to 32 exact DNS hostnames")
-            for host in hosts:
-                if (not isinstance(host, str) or len(host) > 253 or "." not in host
-                        or any(not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", part)
-                               for part in host.split("."))):
-                    raise ValueError("DNS hosts must be exact ASCII hostnames")
+            self.validate_hosts(self.dns["hosts"])
+            self.dns["hosts"] = list(dict.fromkeys(self.dns["hosts"] + hosts))
+            self.validate_hosts(self.dns["hosts"])
             if not isinstance(self.dns["proxy"], str):
                 raise ValueError("DNS proxy must be an HTTP URL")
             proxy = urlsplit(self.dns["proxy"])
@@ -107,6 +127,34 @@ class Config:
             interval = self.dns["refresh_seconds"]
             if type(interval) is not int or not 60 <= interval <= 86400:
                 raise ValueError("DNS refresh interval must be 60..86400 seconds")
+            if not self.dns["hosts"]:
+                self.dns = None
+        elif hosts:
+            raise ValueError("Hostname modules require dns settings with a loopback HTTP proxy")
+
+    @staticmethod
+    def validate_hosts(hosts):
+        if not isinstance(hosts, list) or len(hosts) > 32:
+            raise ValueError("Supply up to 32 exact DNS hostnames")
+        for host in hosts:
+            if (not isinstance(host, str) or len(host) > 253 or "." not in host
+                    or any(not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", part)
+                           for part in host.split("."))):
+                raise ValueError("DNS hosts must be exact ASCII hostnames")
+
+    def editable(self):
+        if "modules" in self.data:
+            return self.data
+        data = json.loads(json.dumps(self.data))
+        old_hosts = data.get("dns", {}).get("hosts", []) if data.get("dns") else []
+        data["modules"] = []
+        if data["targets"] or old_hosts:
+            data["modules"].append({"id": "existing-protection", "name": "现有保护", "enabled": True,
+                                    "targets": data["targets"], "hosts": old_hosts})
+        data["targets"] = []
+        if data.get("dns"):
+            data["dns"]["hosts"] = []
+        return data
 
     @classmethod
     def load(cls, path):
@@ -339,21 +387,54 @@ def install(path):
     start()
 
 
+def configure(path):
+    installed()
+    candidate = Config.load(path)
+    config_path = HOME / "policy.json"
+    previous = config_path.read_bytes()
+    write(HOME / "policy.previous.json", previous)
+    write_json(config_path, candidate.data)
+    digest = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    if core.command([LAUNCHCTL, "print", "system/" + LABEL], check=False).returncode != 0:
+        return
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        current = status()
+        if current["rules_verified"] and current["state"].get("config_sha256") == digest:
+            return
+        time.sleep(1)
+    # A failed edit must not silently replace the previously working policy.
+    write(config_path, previous)
+    raise RuntimeError("New policy was not verified in time; previous configuration restored")
+
+
+def snapshot():
+    installed()
+    return {"configuration": Config.load(HOME / "policy.json").editable(), "status": status()}
+
+
 def run():
     installed()
     secure(HOME / "policy.json")
-    config = Config.load(HOME / "policy.json")
-    cache = DNSCache(config)
+    cache, digest = None, None
     with lock():
         guard = Guard()
         state = {"anchor": ANCHOR, "pid": os.getpid()}
         try:
             while not (HOME / "disabled").exists():
                 try:
+                    raw = (HOME / "policy.json").read_bytes()
+                    current_digest = hashlib.sha256(raw).hexdigest()
+                    if current_digest != digest:
+                        config = Config(json.loads(raw))
+                        cache = DNSCache(config)
+                        digest = current_digest
                     policy, dns = cache.policy()
                     counts = guard.ensure(policy)
                     state.update({"state": "rules_loaded", "interfaces": policy.interfaces,
-                                  "target_count": len(policy.targets), "dns": dns, "counters": counts})
+                                  "target_count": len(policy.targets), "dns": dns, "counters": counts,
+                                  "config_sha256": digest, "module_count": len(config.modules),
+                                  "active_modules": sum(m["enabled"] for m in config.modules)})
                     state.pop("error", None)
                 except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as error:
                     state.update({"state": "degraded", "error": str(error)[:1000]})
@@ -370,6 +451,11 @@ def main(args):
     action = args.service_action
     if action == "install":
         install(Path(args.config))
+    elif action == "configure":
+        configure(Path(args.config))
+    elif action == "snapshot":
+        print(json.dumps(snapshot(), ensure_ascii=False, indent=2))
+        return 0
     elif action == "run":
         run()
         return 0
