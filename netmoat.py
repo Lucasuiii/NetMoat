@@ -21,8 +21,8 @@ import time
 PF = "/sbin/pfctl"
 PF_CONFIG = Path("/etc/pf.conf")
 RUNTIME = Path("/private/var/run")
-PREFIX = "gfw-"
-ANCHOR_PREFIX = "com.apple/gfw_"
+PREFIX = "netmoat-"
+ANCHOR_PREFIX = "com.apple/netmoat_"
 
 
 def command(args, check=True, timeout=15):
@@ -164,7 +164,7 @@ class Session:
             command([PF, "-n", "-a", self.anchor, "-f", str(rule_file)])
             # Armed before any PF mutation. The timeout also protects a killed parent.
             self.watchdog = subprocess.Popen(
-                ["/bin/sh", "-c", 'sleep "$1"; exec /bin/sh "$2"', "gfw-watchdog",
+                ["/bin/sh", "-c", 'sleep "$1"; exec /bin/sh "$2"', "netmoat-watchdog",
                  str(self.lifetime), str(rollback)], stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             # The kernel's token is written directly to an on-disk log, closing the

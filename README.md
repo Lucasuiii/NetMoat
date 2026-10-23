@@ -1,6 +1,8 @@
-# GFW
+# NetMoat
 
-一个轻量的 macOS PF 出站策略与验证框架。
+给出站连接筑一道护城河。
+
+NetMoat 是一个轻量的 macOS PF 出站策略与验证框架。
 
 通过 JSON 配置选择物理网卡和目标 IP / CIDR，生成 IPv4、IPv6 拦截规则；用临时会话加载规则，再通过可控的诱饵连接和实际命中计数验证效果。
 
@@ -24,18 +26,18 @@
 需要 macOS 和 Python 3.9+。运行时仅使用 Python 标准库。
 
 ```sh
-git clone https://github.com/Lucasuiii/GFW.git
-cd GFW
+git clone https://github.com/Lucasuiii/NetMoat.git
+cd NetMoat
 python3 -m venv .venv
 .venv/bin/python -m pip install .
 ```
 
-也可以直接用 `python3 gfw.py` 代替安装后的 `gfw` 命令。
+也可以直接用 `python3 netmoat.py` 代替安装后的 `netmoat` 命令。
 
 ## 先看规则
 
 ```sh
-.venv/bin/gfw render --config examples/policy.json
+.venv/bin/netmoat render --config examples/policy.json
 ```
 
 此命令不需要管理员权限，不连接网络，也不加载规则。
@@ -54,7 +56,7 @@ python3 -m venv .venv
 先审查自己的配置，再运行一个 60 秒会话：
 
 ```sh
-sudo .venv/bin/gfw guard --config examples/policy.json --seconds 60
+sudo .venv/bin/netmoat guard --config examples/policy.json --seconds 60
 ```
 
 命令会输出锚点和恢复目录。时间到或按 Ctrl-C 时清理，另有一个独立看守进程兜底撤销。`loaded_not_verified` 只表示规则已加载、表内容已读回，不表示已经证明流量被阻止。
@@ -62,13 +64,13 @@ sudo .venv/bin/gfw guard --config examples/policy.json --seconds 60
 查看会话：
 
 ```sh
-sudo .venv/bin/gfw status
+sudo .venv/bin/netmoat status
 ```
 
 如正常清理失败，状态会保留恢复目录。可使用命令输出的目录手动清理：
 
 ```sh
-sudo .venv/bin/gfw cleanup --state-dir /private/var/run/gfw-REPLACE_WITH_SESSION_ID
+sudo .venv/bin/netmoat cleanup --state-dir /private/var/run/netmoat-REPLACE_WITH_SESSION_ID
 ```
 
 清理只操作该会话自己的锚点和启用引用，不能用来管理其他软件的规则。手动清理后的目录会保留给仍在运行的原会话处理；进程意外终止时可能留下小型恢复目录供检查。
@@ -83,7 +85,7 @@ sudo .venv/bin/gfw cleanup --state-dir /private/var/run/gfw-REPLACE_WITH_SESSION
 
 ```sh
 # 先把 DECOY_V4、DECOY_V6 设置为合适的测试地址。
-sudo .venv/bin/gfw probe \
+sudo .venv/bin/netmoat probe \
   --config examples/policy.json \
   --interface en0 \
   --ipv4 "$DECOY_V4" \
@@ -121,7 +123,7 @@ python3 -m unittest discover -s tests -v
 
 单元测试覆盖配置注入、目标表核验、受保护地址探测拒绝、缺失父锚点、清理失败和 PF 引用恢复。CI 不执行特权网络操作；真实网络验证需要在一台 Mac 上显式运行 `probe`。
 
-English: GFW is a small, session-scoped macOS PF policy and verification framework. It accepts explicit interfaces and literal IP/CIDR targets, renders rules, runs temporary sessions, and checks blocking with user-selected decoys. It ships no service-specific rules and no startup daemon. See the configuration and commands above; all CLI help is available through `--help`.
+English: NetMoat is a small, session-scoped macOS PF policy and verification framework. It accepts explicit interfaces and literal IP/CIDR targets, renders rules, runs temporary sessions, and checks blocking with user-selected decoys. It ships no service-specific rules and no startup daemon. See the configuration and commands above; all CLI help is available through `--help`.
 
 ## 许可证
 

@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gfw-macos"
+name = "netmoat-macos"
 version = "0.1.0"
 description = "A small, session-scoped macOS PF egress policy and verification framework"
 readme = "README.md"
@@ -13,7 +13,7 @@ authors = [{name = "Lucasuiii"}]
 classifiers = ["Development Status :: 3 - Alpha", "Operating System :: MacOS", "Programming Language :: Python :: 3"]
 
 [project.scripts]
-gfw = "gfw:main"
+netmoat = "netmoat:main"
 
 [tool.setuptools]
-py-modules = ["gfw"]
+py-modules = ["netmoat"]
