@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netmoat-macos"
-version = "0.1.0"
+version = "0.2.0"
 description = "A small, session-scoped macOS PF egress policy and verification framework"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -16,4 +16,4 @@ classifiers = ["Development Status :: 3 - Alpha", "Operating System :: MacOS", "
 netmoat = "netmoat:main"
 
 [tool.setuptools]
-py-modules = ["netmoat"]
+py-modules = ["netmoat", "netmoat_service"]
