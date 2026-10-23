@@ -33,7 +33,7 @@ impl Paths {
             run: "/private/var/run/netmoat-service".into(),
             plist: format!("/Library/LaunchDaemons/{LABEL}.plist").into(),
             launcher: "/usr/local/bin/netmoat".into(),
-            public_status: "/private/var/run/netmoat-status.json".into(),
+            public_status: "/private/var/run/netmoat-public/status.json".into(),
             owner: 0,
         }
     }

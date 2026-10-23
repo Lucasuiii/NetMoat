@@ -119,7 +119,7 @@ enum Runner {
     func observeStatus() {
         observedAt = Date()
         guard !preview else { return }
-        let path = "/private/var/run/netmoat-status.json"
+        let path = "/private/var/run/netmoat-public/status.json"
         do {
             let attributes = try FileManager.default.attributesOfItem(atPath: path)
             guard attributes[.type] as? FileAttributeType == .typeRegular,

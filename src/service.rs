@@ -14,6 +14,7 @@ use signal_hook::{
 };
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -63,13 +64,19 @@ pub fn publish(paths: &Paths, state: &State) -> Result<()> {
         "backend": state.backend, "version": state.version, "configuration_sha256": state.config_sha256,
         "rules_verified": state.state == "rules_loaded", "target_count": state.target_count,
         "active_modules": state.active_modules, "stale_host_count": state.dns.as_ref().map(|d| d.stale_hosts.len()).unwrap_or(0)});
-    paths.secure(
-        paths
-            .public_status
-            .parent()
-            .context("Missing status parent")?,
-        true,
-    )?;
+    let parent = paths
+        .public_status
+        .parent()
+        .context("Missing status parent")?;
+    match fs::create_dir(parent) {
+        Ok(()) => {
+            paths.secure(parent, true)?;
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o755))?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
+        Err(error) => return Err(error.into()),
+    }
+    paths.secure(parent, true)?;
     atomic_write(
         &paths.public_status,
         &serde_json::to_vec(&value)?,
@@ -598,6 +605,15 @@ impl Backend<'_> {
         if self.paths.public_status.exists() {
             self.paths.secure(&self.paths.public_status, false)?;
             fs::remove_file(&self.paths.public_status)?;
+        }
+        let public_parent = self
+            .paths
+            .public_status
+            .parent()
+            .context("Missing status parent")?;
+        if public_parent.exists() {
+            self.paths.secure(public_parent, true)?;
+            fs::remove_dir(public_parent)?;
         }
         fs::remove_dir_all(&self.paths.run)?;
         fs::remove_dir_all(&self.paths.home)?;

@@ -38,7 +38,7 @@ fn fixture() -> (tempfile::TempDir, Paths) {
         run: dir.path().join("run"),
         plist: dir.path().join("job.plist"),
         launcher: dir.path().join("launcher"),
-        public_status: dir.path().join("public.json"),
+        public_status: dir.path().join("public/status.json"),
         owner: unsafe { libc::geteuid() },
     };
     paths.mkdir(&paths.home).unwrap();
@@ -1052,7 +1052,7 @@ fn service_process_fixture() {
         run: root.join("run"),
         plist: root.join("job.plist"),
         launcher: root.join("launcher"),
-        public_status: root.join("public.json"),
+        public_status: root.join("public/status.json"),
         owner: unsafe { libc::geteuid() },
     };
     let runner = FakeRunner::default();

@@ -78,7 +78,7 @@ sudo /usr/local/bin/netmoat service uninstall
 | 开机任务 | `/Library/LaunchDaemons/io.github.lucasuiii.netmoat.plist` |
 | 命令入口 | `/usr/local/bin/netmoat` |
 | 私有规则、状态及引用 | `/private/var/run/netmoat-service/` |
-| 无目标信息的只读心跳 | `/private/var/run/netmoat-status.json` |
+| 无目标信息的只读心跳 | `/private/var/run/netmoat-public/status.json` |
 
 `rules_verified` 表示配置、近期心跳与当前 PF 读回一致，不是实际网络探测证明。仅有进程或陈旧绿色提示不代表保护有效。`status`、`snapshot` 不查询 DNS 或连接目标。
 
