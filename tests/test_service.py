@@ -73,6 +73,15 @@ class ConfigTests(unittest.TestCase):
                         with service.lock():
                             self.fail("Concurrent lock was granted")
 
+    def test_stop_lock_waits_for_asynchronous_daemon_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(service, "RUN", Path(tmp)), mock.patch.object(service, "secure"), \
+                    mock.patch.object(service.fcntl, "flock", side_effect=[BlockingIOError(), None]) as acquire, \
+                    mock.patch.object(service.time, "sleep") as sleep:
+                with service.lock(wait=30):
+                    self.assertEqual(acquire.call_count, 2)
+                sleep.assert_called_once_with(0.1)
+
 
 class CacheTests(unittest.TestCase):
     def setUp(self):

@@ -61,15 +61,20 @@ def write_json(path, value):
 
 
 @contextmanager
-def lock():
+def lock(wait=0):
     mkdir(RUN)
     fd = os.open(str(RUN / "lock"), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         secure(RUN / "lock")
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise RuntimeError("The service is still running; refusing concurrent changes")
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("The service is still running; refusing concurrent changes")
+                time.sleep(0.1)
         yield
     finally:
         os.close(fd)
@@ -293,8 +298,9 @@ def stop():
     core.command([LAUNCHCTL, "disable", "system/" + LABEL])
     if core.command([LAUNCHCTL, "print", "system/" + LABEL], check=False).returncode == 0:
         core.command([LAUNCHCTL, "bootout", "system/" + LABEL], timeout=40)
-    # bootout completion and the advisory lock must both agree that the daemon is gone.
-    with lock():
+    # bootout may return while SIGTERM cleanup is still running. Wait for the
+    # exclusive lock before doing fallback cleanup or deleting runtime state.
+    with lock(wait=30):
         Guard().cleanup()
         write_json(RUN / "state.json", {"anchor": ANCHOR, "state": "stopped", "updated_at": time.time()})
 
