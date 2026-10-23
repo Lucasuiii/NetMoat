@@ -51,8 +51,8 @@ def build(output, replace=False):
         info = {"CFBundleIdentifier": "io.github.lucasuiii.netmoat.controller",
                      "CFBundleName": "NetMoat", "CFBundleDisplayName": "NetMoat",
                      "CFBundleExecutable": "NetMoat", "CFBundlePackageType": "APPL",
-                     "CFBundleIconFile": "NetMoat.icns", "CFBundleVersion": "3",
-                     "CFBundleShortVersionString": "0.3.0", "NSHighResolutionCapable": True,
+                     "CFBundleIconFile": "NetMoat.icns", "CFBundleVersion": "4",
+                     "CFBundleShortVersionString": "0.4.0", "NSHighResolutionCapable": True,
                      "CFBundleDevelopmentRegion": "zh-Hans", "LSMinimumSystemVersion": "14.0",
                      "NSSystemAdministrationUsageDescription": "Manage the NetMoat network protection service."}
         path.write_bytes(plistlib.dumps(info))

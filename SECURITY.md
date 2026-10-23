@@ -1,34 +1,44 @@
 # Security and operational scope
 
-Privileged operations are limited to a unique child of an already-loaded
-`com.apple/*` PF anchor and one enable-reference token acquired by that session.
-The framework never reloads the root ruleset, disables PF globally, or flushes
-global connection states. If the parent anchor is absent, startup stops.
+Permanent backend and service CLI are Rust. Privileged operations are limited to
+one fixed owned child of an existing `com.apple/*` PF anchor and its enable token.
+The framework never reloads root rules, globally disables PF or flushes global
+connection states. Missing parent causes application failure without root reload.
 
-The optional startup service reserves the child anchor ending in
-`0000000000000000`, holds an exclusive runtime lock, and retains its enable
-reference across process crashes within one boot. launchd restarts it; normal
-stop/uninstall flushes only that anchor and releases only its own reference.
-Code/configuration are copied into an administrator-owned directory and run by
-the system Python in isolated mode. Do not replace the system interpreter with
-a user-editable environment. Service installation is an explicit privileged action.
+The anchor ends in `0000000000000000`. Lifetime and management locks protect
+process ownership and serialized changes. No Drop handler clears rules. Explicit
+stop/uninstall unloads the job, waits for its lock, flushes only its anchor and
+releases only its token after empty readback. Unexpected exit is not a stop.
 
-Configuration is administrator-controlled input. Interface names and literal
-IP/CIDR targets are validated before rule generation. Runtime state lives in a
-root-owned private directory. Do not execute an unreviewed checkout as root.
+Binary/configuration are administrator owned. Path checks reject symlinks,
+unexpected owners and group/world-writable files. JSON is size-limited and typed;
+interfaces, targets, exact hostnames and loopback proxies are validated. Saves
+require an expected configuration version; rollback must still own its candidate.
+Do not run an unreviewed checkout/binary as administrator. See
+[backend design](docs/BACKEND.md).
 
-A successful rule load is not proof of protection. Use controlled decoys and
-review all requested address families, PF counters, and cleanup results. A
-failed baseline, an unreadable counter, or an ambiguous cleanup readback is a
-failure rather than a pass. The framework does not promise per-application,
-hostname, earliest-startup, reboot-transition, or established-connection isolation.
-Startup and periodic repair can have gaps. Optional exact-host DNS refresh is
-forced through a configured loopback HTTP proxy to Cloudflare DoH; failures
-retain last-good addresses and eventually report stale hosts. Shared IPs can
-affect unrelated direct connections. DNS refresh is not a domain-filter backend.
+DNS is forced through explicit loopback HTTP proxy to Cloudflare DoH, with no
+direct fallback. Reply/cache errors retain last-good records; missing records
+prevent installing an incomplete policy. Old records cannot ensure new real-world
+addresses are blocked. Shared IPs may affect unrelated connections. This is not
+a hostname-filter backend.
 
-Issue reports should use documentation-only targets and omit private policies,
-real network identifiers, credentials, and raw local reports. For a sensitive
-security issue, use the repository's private vulnerability reporting feature
-when available; otherwise avoid publishing exploit details or secrets in a
-public issue.
+Private state stays in administrator-owned private directories. A sanitized
+public heartbeat exposes only aggregate counts, configuration digest and status,
+not targets, interfaces, proxy settings, module names or errors. Old observations
+are marked unknown. A green heartbeat is a recent check, not continuous proof.
+
+Readback is not an end-to-end test. Validate intended paths and address families.
+There is no promise of per-app, domain, earliest-boot, reboot-transition,
+other-interface or established-connection isolation. External PF changes and
+periodic repair can have gaps. Old Python cleans rules on exit, so 0.3-to-0.4
+migration can have a gap too. Enabling PF may activate other already-loaded rules.
+No full security audit, zero-bug or uninterrupted-protection claim is made.
+
+Optional Python tools provide temporary sessions and decoy tests only. Their
+watchdog intentionally revokes temporary rules at expiry; permanent Rust daemon
+has different retained-rule semantics. They are not installed as a backend.
+
+Reports should use documentation targets and omit personal policies, network
+identifiers, credentials and raw local reports. Use private vulnerability
+reporting when available; avoid exploit details or secrets in public issues.

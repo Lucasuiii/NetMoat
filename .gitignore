@@ -11,3 +11,4 @@ work/
 private/
 *.local.json
 *-report.json
+/target/

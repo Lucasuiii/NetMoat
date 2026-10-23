@@ -8,6 +8,21 @@ permissions:
   contents: read
 
 jobs:
+  rust:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+      - run: cargo +stable fmt --check
+      - run: cargo +stable clippy --locked --all-targets -- -D warnings
+      - run: cargo +stable test --locked
+      - run: cargo +stable build --release --locked
+      - run: ./target/release/netmoat validate --config examples/policy.json
   unit:
     strategy:
       matrix:
@@ -25,4 +40,6 @@ jobs:
       - run: python netmoat.py render --config examples/policy.json
       - name: Build native controller
         if: matrix.os == 'macos-latest' && matrix.python == '3.13'
-        run: python scripts/build_controller.py --output "$RUNNER_TEMP/NetMoat.app"
+        run: |
+          python scripts/test_controller.py
+          python scripts/build_controller.py --output "$RUNNER_TEMP/NetMoat.app"

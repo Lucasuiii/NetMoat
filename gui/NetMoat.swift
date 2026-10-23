@@ -33,8 +33,22 @@ struct GuardStatus: Codable, Sendable {
     var autostart_enabled: Bool
     var rules_verified: Bool
     var state: ServiceState?
+    var checked_at: Double?
+    var error: String?
 }
-struct Snapshot: Codable, Sendable { var configuration: PolicyDocument; var status: GuardStatus }
+struct Snapshot: Codable, Sendable { var configuration: PolicyDocument; var configuration_sha256: String?; var status: GuardStatus }
+struct PublicStatus: Decodable, Sendable {
+    var format: String
+    var state: String
+    var updated_at: Double
+    var backend: String
+    var version: String
+    var configuration_sha256: String
+    var rules_verified: Bool
+    var target_count: Int
+    var active_modules: Int
+    var stale_host_count: Int
+}
 
 enum Runner {
     static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'" }
@@ -52,7 +66,8 @@ enum Runner {
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
             let message = String(decoding: errors, as: UTF8.self)
-            throw NSError(domain: "NetMoat", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message.contains("-128") ? "操作已取消，保护配置保持原状。" : message])
+            let explanation = message.contains("-128") ? "操作已取消，保护配置保持原状。" : message.contains("Configuration conflict") ? "配置已由其他入口更新，请重新读取后再保存。" : message.contains("Another NetMoat operation") ? "另一个管理操作尚未结束，请稍后重新读取状态。" : message
+            throw NSError(domain: "NetMoat", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: explanation])
         }
         return String(decoding: data, as: UTF8.self)
     }
@@ -63,11 +78,58 @@ enum Runner {
     @Published var busy = false
     @Published var message: String?
     @Published var error: String?
+    @Published var heartbeat: PublicStatus?
+    @Published var observedAt = Date()
     let preview = CommandLine.arguments.contains("--preview")
     var modules: [ProtectionModule] { snapshot?.configuration.modules ?? [] }
     var activeCount: Int { modules.filter(\.enabled).count }
     var stale: [String] { snapshot?.status.state?.dns?.stale_hosts ?? [] }
-    var protected: Bool { snapshot?.status.rules_verified == true && activeCount > 0 && (snapshot?.status.state?.target_count ?? 0) > 0 }
+    var heartbeatFresh: Bool {
+        guard let heartbeat else { return false }
+        let age = observedAt.timeIntervalSince1970 - heartbeat.updated_at
+        return (-5...75).contains(age)
+    }
+    var configurationMatches: Bool { heartbeat?.configuration_sha256 == snapshot?.configuration_sha256 }
+    var protected: Bool {
+        if preview { return snapshot?.status.rules_verified == true && activeCount > 0 }
+        guard activeCount > 0 else { return false }
+        let checked = snapshot?.status.checked_at ?? 0
+        if let heartbeat, heartbeatFresh, heartbeat.updated_at >= checked {
+            return configurationMatches && heartbeat.rules_verified && heartbeat.target_count > 0
+        }
+        let age = observedAt.timeIntervalSince1970 - checked
+        return checked > 0 && (-5...75).contains(age) && snapshot?.status.rules_verified == true && (snapshot?.status.state?.target_count ?? 0) > 0
+    }
+    var serviceLoaded: Bool {
+        if let heartbeat, heartbeatFresh, heartbeat.updated_at >= (snapshot?.status.checked_at ?? 0) { return heartbeat.state != "stopped" }
+        return snapshot?.status.loaded == true
+    }
+    var needsCheck: Bool { !preview && snapshot != nil && serviceLoaded && !protected && activeCount > 0 }
+    var statusTitle: String { protected ? "保护已开启" : needsCheck ? "保护待核对" : "保护未开启" }
+    var statusDetail: String {
+        if protected { return "已启用的目标正在按配置限制直连。" }
+        if needsCheck {
+            if !heartbeatFresh { return "后台状态已过期，请重新读取核对。" }
+            if !configurationMatches { return "配置已从其他入口更新，请重新读取。" }
+            return "后台报告异常，请重新读取查看详情；已有规则可能仍在。"
+        }
+        return activeCount == 0 ? "添加或开启一个模块，选择要保护的目标。" : "开启服务，让已配置的模块生效。"
+    }
+
+    func observeStatus() {
+        observedAt = Date()
+        guard !preview else { return }
+        let path = "/private/var/run/netmoat-status.json"
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: path)
+            guard attributes[.type] as? FileAttributeType == .typeRegular,
+                  (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == 0,
+                  let permissions = attributes[.posixPermissions] as? NSNumber, permissions.intValue & 0o022 == 0,
+                  let size = attributes[.size] as? NSNumber, size.intValue <= 16384 else { heartbeat = nil; return }
+            let value = try JSONDecoder().decode(PublicStatus.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+            heartbeat = value.format == "netmoat-status-v1" && value.backend == "rust" ? value : nil
+        } catch { heartbeat = nil }
+    }
 
     init() {
         if preview {
@@ -79,6 +141,7 @@ enum Runner {
                                     state: ServiceState(state: "rules_loaded", target_count: 3,
                                                         dns: DNSState(enabled: true, stale_hosts: []))))
         }
+        observeStatus()
     }
 
     func execute(_ action: String, document: PolicyDocument? = nil) {
@@ -97,11 +160,14 @@ enum Runner {
             do {
                 var command = "/usr/local/bin/netmoat service " + action
                 if let document {
+                    guard let version = snapshot?.configuration_sha256, version.count == 64 else {
+                        throw NSError(domain: "NetMoat", code: 1, userInfo: [NSLocalizedDescriptionKey: "请先重新读取状态，再保存配置。"])
+                    }
                     let path = FileManager.default.temporaryDirectory.appendingPathComponent("NetMoat-policy-\(UUID().uuidString).json")
                     file = path
                     try JSONEncoder().encode(document).write(to: path, options: .atomic)
                     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
-                    command += " --config " + Runner.quote(path.path)
+                    command += " --config " + Runner.quote(path.path) + " --expected-sha " + Runner.quote(version)
                 }
                 if action != "snapshot" && action != "uninstall" { command += " >/dev/null && /usr/local/bin/netmoat service snapshot" }
                 let shellCommand = command
@@ -109,6 +175,8 @@ enum Runner {
                 if action == "uninstall" { snapshot = nil; message = "后台服务已卸载。"; return }
                 let result = try JSONDecoder().decode(Snapshot.self, from: Data(text.utf8))
                 snapshot = result
+                observeStatus()
+                if let backendError = result.status.error ?? result.status.state?.error { self.error = backendError }
                 if action == "configure" {
                     message = !stale.isEmpty ? "配置已保存，部分主机地址尚未更新。" : result.status.rules_verified ? "模块配置已保存并核对。" : "配置已保存，将在开启保护后生效。"
                 }
@@ -137,6 +205,7 @@ enum Section: String, CaseIterable, Identifiable {
 }
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = Model()
     @State private var section: Section = .overview
     @State private var editing: ProtectionModule?
@@ -182,6 +251,13 @@ struct ContentView: View {
         } message: { Text("撤销保护规则、关闭开机启动，并移除本机服务配置。") }
         .onChange(of: section) { _, next in if next == .settings { loadSettings() } }
         .onChange(of: model.snapshot?.configuration.dns?.proxy) { _, _ in if section == .settings { loadSettings() } }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                model.observeStatus()
+                do { try await Task.sleep(for: .seconds(15)) } catch { break }
+            }
+        }
     }
 
     var sidebar: some View {
@@ -240,21 +316,25 @@ struct ContentView: View {
                 Image(systemName: model.protected ? "checkmark.circle" : "pause.circle")
                     .font(.system(size: 38, weight: .ultraLight)).foregroundStyle(model.protected ? accent : .secondary)
                 VStack(alignment: .leading, spacing: 9) {
-                    Text(model.protected ? "保护已开启" : "保护未开启").font(.system(size: 22, weight: .semibold))
-                    Text(model.protected ? "已启用的目标正在按配置限制直连。" : model.activeCount == 0 ? "添加或开启一个模块，选择要保护的目标。" : "开启服务，让已配置的模块生效。")
+                    Text(model.statusTitle).font(.system(size: 22, weight: .semibold))
+                    Text(model.statusDetail)
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                     HStack(spacing: 8) {
                         chip(model.snapshot?.status.autostart_enabled == true ? "开机启动已开" : "开机启动已关")
                         chip("\(model.activeCount) 个启用模块")
                     }.padding(.top, 4)
+                    if let heartbeat = model.heartbeat, !model.preview {
+                        Text("最近核对 \(Date(timeIntervalSince1970: heartbeat.updated_at).formatted(date: .omitted, time: .standard))")
+                            .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    }
                 }
                 Spacer(minLength: 0)
-                Button(model.snapshot?.status.loaded == true ? "暂停保护" : "开启保护") {
-                    model.execute(model.snapshot?.status.loaded == true ? "stop" : "start")
+                Button(model.serviceLoaded ? "暂停保护" : "开启保护") {
+                    model.execute(model.serviceLoaded ? "stop" : "start")
                 }.buttonStyle(.bordered).disabled(model.busy)
             }.padding(26).card()
-            if !model.stale.isEmpty {
-                notice("\(model.stale.count) 个主机的地址尚未更新，当前保留可用缓存。", icon: "clock", color: .orange)
+            if !model.stale.isEmpty || (model.heartbeat?.stale_host_count ?? 0) > 0 {
+                notice("\(max(model.stale.count, model.heartbeat?.stale_host_count ?? 0)) 个主机的地址尚未更新，当前保留可用缓存。", icon: "clock", color: .orange)
             }
             HStack(spacing: 14) {
                 metric("保护模块", value: "\(model.modules.count)", detail: "各自编辑与启停")
@@ -337,7 +417,7 @@ struct ContentView: View {
     }
     func chip(_ text: String) -> some View { Text(text).font(.system(size: 10, weight: .medium)).padding(.horizontal, 9).padding(.vertical, 5).background(Color.primary.opacity(0.045), in: Capsule()) }
     func notice(_ text: String, icon: String, color: Color) -> some View { HStack(alignment: .top, spacing: 8) { Image(systemName: icon); Text(text).textSelection(.enabled); Spacer(minLength: 0) }.font(.system(size: 12)).foregroundStyle(color).padding(12).background(color.opacity(0.07), in: RoundedRectangle(cornerRadius: 10)) }
-    var footer: some View { HStack { Text("NetMoat").font(.system(size: 10, weight: .medium)); Spacer(); Text("本地配置 · 无遥测").font(.system(size: 10)) }.foregroundStyle(.tertiary) }
+    var footer: some View { HStack { Text("NetMoat · Rust 后台").font(.system(size: 10, weight: .medium)); Spacer(); Text("本地配置 · 无遥测").font(.system(size: 10)) }.foregroundStyle(.tertiary) }
 }
 
 func split(_ value: String) -> [String] {
@@ -370,6 +450,7 @@ extension View {
     func card() -> some View { self.background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 15)).overlay(RoundedRectangle(cornerRadius: 15).stroke(Color.primary.opacity(0.055)).allowsHitTesting(false)) }
 }
 
+#if !NETMOAT_TESTS
 @main struct NetMoatApp: App {
     var body: some Scene {
         WindowGroup("NetMoat") { ContentView() }
@@ -378,3 +459,4 @@ extension View {
             .commands { CommandGroup(replacing: .newItem) {} }
     }
 }
+#endif

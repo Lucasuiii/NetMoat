@@ -2,131 +2,38 @@
 
 给出站连接筑一道护城河。
 
-NetMoat 是一个轻量的 macOS PF 出站策略与验证框架。
+NetMoat 是 macOS PF 出站策略框架：**Rust 后台 + 原生 SwiftUI 控制台**。通过明确的物理网卡、IP/CIDR 和可选的精确主机地址更新，管理独立保护模块。不附带任何真实服务的域名或地址清单。
 
-通过 JSON 配置选择物理网卡和目标 IP / CIDR，生成 IPv4、IPv6 拦截规则；用临时会话加载规则，再通过可控的诱饵连接和实际命中计数验证效果。
+**实验性项目。** 它不是按域名或应用识别的通用防火墙，也不承诺零遗漏或开机最早阶段的保护。请先阅读覆盖限制。
 
-**实验性项目。** 默认提供临时会话；也可以主动安装可关闭、可卸载的开机服务。不附带任何真实服务的域名或地址清单。
+## 0.4 后台变更
 
-## 能做什么
+- 常驻后台与服务管理全部改为 Rust，运行时无需 Python 或 Xcode。
+- 信号、异常和意外退出保留最后已加载规则；明确停止或卸载才撤销。
+- 配置修改使用独立管理锁和预期版本；旧快照不能覆盖新配置，回滚也检查版本。
+- 验证 DNS 回复与缓存结构；地址缺失时不以不完整集合替换已有规则。
+- 保留 10 秒规则核对，计数按需读取；状态变化或每 30 秒写心跳，不强制同步临时状态。
+- 界面显示核对时间、过期状态与配置变化；心跳不含目标网站信息。
+- 成功升级后删除已安装的旧 Python 后台，控制台仍只有一个应用入口。
 
-- 只在明确指定的 `en` 网卡上拦截指定目的地址。
-- 生成可检查的 PF 规则，默认示例使用文档专用地址。
-- 基于已经存在的 `com.apple/*` 父锚点加载独立、随机命名的子锚点。
-- 同时验证 IPv4 / IPv6 的 TCP 与 UDP DNS 连接。
-- 对照加规则前、规则生效时、撤销后的连接结果。
-- 读取 PF 命中计数，避免把原本就不通的网络当作拦截成功。
-- 使用正常清理及独立超时看守进程，撤销自己的规则和 PF 启用引用。
-- 检查状态，并提供失败后的手动清理入口。
-- 可选安装系统级 `launchd` 服务，开机启动、崩溃重启，并每 10 秒核对规则和地址表。
-- 可选通过明确指定的本机 HTTP 代理刷新精确主机的 A / AAAA 地址，查询失败保留缓存。
+这些措施减少已知故障路径，不构成无漏洞或零中断保证。详见[后台设计](docs/BACKEND.md)。
 
-不重载 PF 主规则，不修改 `/etc/pf.conf`、DNS、路由或代理配置，也不清空系统连接状态。启用一个会话会启用 PF，因此系统原本加载但尚未启用的其他 PF 规则也可能开始生效。
+## 构建
 
-## 安装
-
-需要 macOS 和 Python 3.9+。运行时仅使用 Python 标准库。
+需要 macOS、Rust 工具链及系统链接工具。构建界面另需 Xcode 命令行工具、Python 3、macOS 14+；这些是构建依赖，不是后台运行依赖。
 
 ```sh
 git clone https://github.com/Lucasuiii/NetMoat.git
 cd NetMoat
-python3 -m venv .venv
-.venv/bin/python -m pip install .
+cargo build --release --locked
+./target/release/netmoat --version
+./target/release/netmoat validate --config examples/policy.json
+./target/release/netmoat render --config examples/policy.json
 ```
 
-也可以直接用 `python3 netmoat.py` 代替安装后的 `netmoat` 命令。
+`validate`、`render` 无需管理员权限，不联网、不加载规则；`render` 仅显示静态目标，不查询 DNS。
 
-## 先看规则
-
-```sh
-.venv/bin/netmoat render --config examples/policy.json
-```
-
-此命令不需要管理员权限，不连接网络，也不加载规则。
-
-```json
-{
-  "interfaces": ["en0"],
-  "targets": ["192.0.2.0/24", "2001:db8::/32"]
-}
-```
-
-`interfaces` 是你明确选择的网卡，不能假设每台 Mac 的 Wi-Fi 都叫 `en0`。`targets` 仅接受数字 IP / CIDR；不解析域名，不接受默认路由 `/0`。示例地址用于文档，不能用来证明真实服务的可达性。
-
-## 临时加载
-
-先审查自己的配置，再运行一个 60 秒会话：
-
-```sh
-sudo .venv/bin/netmoat guard --config examples/policy.json --seconds 60
-```
-
-命令会输出锚点和恢复目录。时间到或按 Ctrl-C 时清理，另有一个独立看守进程兜底撤销。`loaded_not_verified` 只表示规则已加载、表内容已读回，不表示已经证明流量被阻止。
-
-查看会话：
-
-```sh
-sudo .venv/bin/netmoat status
-```
-
-如正常清理失败，状态会保留恢复目录。可使用命令输出的目录手动清理：
-
-```sh
-sudo .venv/bin/netmoat cleanup --state-dir /private/var/run/netmoat-REPLACE_WITH_SESSION_ID
-```
-
-清理只操作该会话自己的锚点和启用引用，不能用来管理其他软件的规则。手动清理后的目录会保留给仍在运行的原会话处理；进程意外终止时可能留下小型恢复目录供检查。
-
-## 验证实际拦截
-
-选择你有权测试的无关诱饵地址。诱饵必须：
-
-1. 不在配置中的受保护目标内。
-2. 在指定网卡上可以直连 TCP 测试端口。
-3. 在 UDP 测试端口提供 DNS 服务，能回答 `example.com` 查询。
-
-```sh
-# 先把 DECOY_V4、DECOY_V6 设置为合适的测试地址。
-sudo .venv/bin/netmoat probe \
-  --config examples/policy.json \
-  --interface en0 \
-  --ipv4 "$DECOY_V4" \
-  --ipv6 "$DECOY_V6"
-```
-
-默认端口是 TCP 443 和 UDP 53，可用 `--tcp-port`、`--dns-port` 修改。可以只给一种地址族；报告会明确列出实际请求验证的地址族。
-
-流程：
-
-```text
-诱饵直连成功 → 临时加入同一目标表 → 连接失败且 PF 计数增加
-                                    ↓
-                              撤销后连接恢复
-```
-
-基线失败时不会加载规则。探测不会主动访问配置中的受保护目标。规则计数是观察窗口内的聚合计数，不是逐包归因。
-
-## 开机服务（主动选择安装）
-
-### 可选图形控制台
-
-控制台采用原生 SwiftUI，包含概览、保护模块和设置。需要 macOS 14+ 和可用的 Xcode 命令行开发工具。
-运行下面的构建命令，会在个人“应用程序”目录生成唯一的 `NetMoat.app`：
-
-```sh
-python3 scripts/build_controller.py
-```
-
-控制台支持查看状态、开启、关闭和卸载，以及添加、编辑、启停和移除独立的服务保护模块。
-管理服务时通过系统管理员认证。首次读取不会自动访问目标服务。
-它只控制已经安装的服务，首次安装仍使用下方的命令。不要再把控制台复制到其他目录，避免应用列表出现重复入口。
-已安装本项目生成的新控制台时，可用 `--replace` 更新；构建命令会检查应用标识，拒绝覆盖其他应用。
-
-### 可扩展保护模块
-
-每个模块保存一个网站或服务的名字、精确主机名和 IP / CIDR，拥有独立开关。
-多个启用模块取并集，共享目标只加载一次；关闭一个模块不会移除其他模块仍需要的地址。
-主机名通过公共 DNS 获取地址，并受前文 IP 层与共享地址限制，不支持通配域名或按应用识别。
+## 保护模块
 
 ```json
 {
@@ -134,106 +41,118 @@ python3 scripts/build_controller.py
   "targets": [],
   "dns": {"hosts": [], "proxy": "http://127.0.0.1:8080", "refresh_seconds": 300},
   "modules": [
-    {"id": "work-service", "name": "工作服务", "enabled": true,
-     "targets": ["192.0.2.0/24"], "hosts": ["service.example.com"]}
+    {"id": "work-service", "name": "示例工作服务", "enabled": true,
+     "targets": ["192.0.2.0/24", "2001:db8::/32"], "hosts": ["service.example.com"]}
   ]
 }
 ```
 
-主机与代理端口仅为格式示例。旧的平面配置仍可使用；控制台将其展示为一个“现有保护”模块，首次保存时平滑转换。
-所有模块都关闭时，模块目标表为空，不应视为正在保护任何服务。只有服务配置支持空目标；普通临时会话仍要求至少一个目标。
+以上仅为格式示例。首次实验建议使用 `examples/policy.json` 中的静态文档地址。
+
+- `interfaces`：1–32 个明确的物理 `en` 网卡，不能假设 Wi-Fi 都叫 `en0`。同一网卡更换 Wi-Fi 后仍适用，其他网卡需明确添加。
+- `targets`：最多 4096 个数字 IP/CIDR，不接受通配符、作用域 ID、默认路由 `/0`。
+- `modules`：最多 64 个独立模块；启用模块目标取并集，共享目标不会因其中一个模块关闭而移除。
+- `hosts`：启用主机去重后最多 32 个精确 ASCII 主机名，不支持通配域名。A/AAAA 均成功后才更新该主机缓存。
+- `dns`：仅需更新主机地址时提供。只允许明确的回环 HTTP 代理，无凭据、远程代理或直连回退；间隔 60–86400 秒。
+
+旧平面配置与混合基础目标在控制台显示为“现有保护”模块，防止隐藏规则；混合格式需留一个迁移模块槽位。模块全部关闭时目标可为空，不能视为保护任何服务。
+
+## 安装与管理
+
+首次安装立即尝试开启保护，并启用开机启动。只使用已有 `com.apple/*` 父锚点；父锚点不存在时返回失败，不重载系统主规则。
 
 ```sh
-# 读取配置与现场状态，不探测目标站点
+sudo ./target/release/netmoat service install --config examples/policy.json
 sudo /usr/local/bin/netmoat service snapshot
-
-# 验证并应用配置；保留上一份配置，超时失败时恢复
-sudo /usr/local/bin/netmoat service configure --config policy.json
-```
-
-运行中的服务每 10 秒读取配置变化，在原子锚点规则加载时更新目标，不先清空原有规则。
-更改后等待配置摘要与现场读回匹配；失败不应视为新配置已经受到保护。
-主机解析尚不可用时会显示待更新；服务暂停时只保存配置，重新开启后生效。
-
-### 安装与管理
-
-先审查自己的配置。下面的安装命令会立即启用规则，并配置下次开机启动：
-
-```sh
-sudo .venv/bin/netmoat service install --config examples/policy.json
 sudo /usr/local/bin/netmoat service status
-```
-
-安装将两份源码和配置复制到管理员拥有的 `/Library/Application Support/NetMoat`，
-在 `/Library/LaunchDaemons` 中创建独立的任务，并安装 `/usr/local/bin/netmoat` 启动器。
-后台使用系统的 `/usr/bin/python3` 及隔离模式，不依赖项目文件夹、当前登录用户的虚拟环境或工作目录。
-需要系统 Python 3.9+ 已能正常运行；系统或开发工具更新后应重新检查服务。
-
-服务通过 [`launchd`](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)
-在开机后启动并在崩溃后重启，复用本次开机内已持有的 PF 引用，不不断累积引用。
-每 10 秒核对一次规则和地址表，子规则被清除时重新加载自己的子锚点。
-系统父锚点尚未出现时等待，不重载主规则。
-
-```sh
-# 关闭当前保护，并停用后续开机启动
 sudo /usr/local/bin/netmoat service stop
-
-# 重新开启当前保护和开机启动
 sudo /usr/local/bin/netmoat service start
-
-# 撤销规则和本服务的 PF 引用，移除服务、配置、缓存和启动器
 sudo /usr/local/bin/netmoat service uninstall
 ```
 
-`service status` 中 `rules_verified` 会现场读回规则和地址表；仅有后台进程不等于规则有效。
-`autostart_enabled` 同时检查安装文件、本服务的停用标志和 `launchd` 的停用状态。
-关闭会持久停用启动项；卸载不修改其他软件的 PF 规则或代理设置。
-若清理读回失败，命令会报错并保留恢复信息；解决后可再次运行关闭或卸载。
+`stop` 同时关闭开机启动；`start` 同时开启开机启动；`uninstall` 撤销自己的规则、引用和本机服务文件。退出控制台不停止后台。意外终止也不被解释为关闭保护；launchd 会尝试重启。停止失败时规则可能仍保留，应核对状态。
 
-服务配置还可选增加 `dns`，普通的 `guard` / `probe` 命令仍只接受原始 IP 策略：
+| 用途 | 路径 |
+| --- | --- |
+| 原生后台、私有配置及缓存 | `/Library/Application Support/NetMoat/` |
+| 开机任务 | `/Library/LaunchDaemons/io.github.lucasuiii.netmoat.plist` |
+| 命令入口 | `/usr/local/bin/netmoat` |
+| 私有规则、状态及引用 | `/private/var/run/netmoat-service/` |
+| 无目标信息的只读心跳 | `/private/var/run/netmoat-status.json` |
 
-```json
-{
-  "interfaces": ["en0"],
-  "targets": ["192.0.2.0/24", "2001:db8::/32"],
-  "dns": {
-    "hosts": ["cdn.example.com"],
-    "proxy": "http://127.0.0.1:8080",
-    "refresh_seconds": 300
-  }
-}
-```
+`rules_verified` 表示配置、近期心跳与当前 PF 读回一致，不是实际网络探测证明。仅有进程或陈旧绿色提示不代表保护有效。`status`、`snapshot` 不查询 DNS 或连接目标。
 
-主机名与端口只是格式示例，请替换为自己的目标和实际代理端口。
-刷新使用 Cloudflare DNS over HTTPS，强制走指定的本机 HTTP 代理，无直连回退。
-每个主机的 A / AAAA 查询均成功且有可用地址时才替换该主机缓存；失败、无可用地址或代理未启动时保留上次结果。
-超过三个刷新周期没有成功的主机会列在 `dns.stale_hosts` 中；无缓存时仅基础 IP 策略生效。
-这只跟踪列出的精确主机，不识别任意子域名，不保证不同解析器或地域返回同一地址。
-多个服务共享同一 IP 时，拦截也会影响该 IP 上的其他直连服务。
-
-## 边界
-
-- 这是目的 IP 和接口级框架，**不提供域名识别、按应用过滤或全局 kill switch**。
-- 只覆盖配置中的网卡和地址；网卡、地址或路由变化需要重新评估配置。
-- 不管理代理或隧道。隧道接口不在规则中，并不能独立证明代理实际采用了哪个出口。
-- 云托管 IP 可能变化或被多个服务共享；增加地址范围会扩大误伤风险。
-- 不主动终止既有 PF 状态，已有长连接不属于这套新连接验证的保证范围。
-- 其他 PF 规则、系统服务、系统升级和网络扩展可能改变实际行为；应在目标环境运行诱饵验证。
-- 超时清理不是跨重启保证。强制断电、重启、内核问题或清理失败都需要状态检查。
-- 开机启动不代表开机全过程无空窗；首次规则加载、系统父锚点等待、轮询修复或 DNS 更新之间可能存在间隔。没有经过验证的全局 fail-closed 保证。
-- 服务崩溃时已有规则和 PF 引用保留，等待重启接管；关闭和卸载才主动撤销。不对其他程序修改 PF 提供绝对保证。
-- 不上传完整配置或测试报告，不读取凭据，没有账户或遥测。开启可选 DNS 刷新时，会通过配置的代理向 Cloudflare 查询所列主机名。
-
-## 开发
+### 从旧版升级
 
 ```sh
-python3 -m unittest discover -s tests -v
+cargo build --release --locked
+sudo ./target/release/netmoat service upgrade
 ```
 
-单元测试覆盖配置注入、目标表核验、受保护地址探测拒绝、缺失父锚点、清理失败和 PF 引用恢复。CI 不执行特权网络操作；真实网络验证需要在一台 Mac 上显式运行 `probe`。
+升级保留配置，替换后台、启动任务和命令入口。**0.3 → 0.4 可能有保护空窗**：旧 Python 后台正常退出会清理规则，应暂停受保护应用的敏感活动。Rust 后台之间升级保留旧规则，但仍不保证全程不中断。
 
-English: NetMoat is a small macOS PF policy and verification framework with an optional native SwiftUI controller. Independent protection modules combine explicit IP/CIDR targets and exact hostnames, with individual enable switches. An opt-in launchd service supports startup, crash recovery, live rule checks, configuration reload, stop/uninstall, and optional proxy-only DNS refresh. It ships no service-specific rules. See the configuration and commands above; all CLI help is available through `--help`.
+升级暂存旧启动配置；新后台核对通过后才删除备份和旧 Python 文件。失败则恢复旧启动配置、尝试重启、保留回退材料并返回失败。原本暂停的服务升级后保持暂停。未完成的升级备份阻止再次盲目升级。
 
-## 许可证
+### 原生控制台
 
-[MIT](LICENSE)。
+```sh
+python3 scripts/build_controller.py
+# 更新已经安装的同标识控制台
+python3 scripts/build_controller.py --replace
+```
+
+默认安装到个人 `Applications/NetMoat.app`，支持模块增删改、启停、设置及卸载。修改配置需要管理员认证；活动界面定期读取心跳无需认证。状态过期或配置从其他入口变化时提示重新核对。
+
+### 命令行修改配置
+
+读取 `service snapshot` 的 `configuration_sha256`，编辑 `configuration` 文档，再用刚读取的版本保存：
+
+```sh
+sudo /usr/local/bin/netmoat service configure \
+  --config policy.json --expected-sha "$CONFIGURATION_SHA256"
+```
+
+运行中等待后台确认该版本并现场核对规则；超时只回滚仍属于本操作的配置，并报告恢复是否核对成功。暂停时只保存，开启后核对。版本冲突时重新读取、合并修改，不能用旧快照覆盖。
+
+## 可选临时会话与诱饵验证
+
+Python 仅保留不常驻的临时会话、对照探测和清理工具，不再实现后台，也不安装到后台目录。可直接运行 `python3 netmoat.py`，或安装可选工具：
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install .
+sudo .venv/bin/netmoat-tools guard --config examples/policy.json --seconds 60
+sudo .venv/bin/netmoat-tools probe --config examples/policy.json \
+  --interface en0 --ipv4 "$DECOY_V4" --ipv6 "$DECOY_V6"
+```
+
+诱饵必须是你有权测试、且不在受保护目标集合内的地址；TCP 端口可直连，UDP DNS 端口能回答 `example.com` 查询。验证包括基线成功、临时加入诱饵、连接失败且计数增加、撤销后恢复。基线失败不加载规则，可只请求一种地址族。聚合规则计数不能逐连接归因。
+
+临时会话有独立超时看守，期满撤销；永久 Rust 后台意外退出保留规则，两者生命周期不同。
+
+## 覆盖限制
+
+- 按网卡和目的 IP 工作，不能识别应用、账户或所有域名入口。
+- 地址来自经本机代理访问的 Cloudflare DoH，可能与客户端 DNS 答案不同；共享 CDN 地址可能误伤其他直连服务。
+- 查询失败保留旧地址，超过三个刷新周期标记过期；旧地址不能保证拦住新地址。缺少有效记录时保留已有 PF 规则并报告降级。
+- 不清空系统连接状态，不保证阻断已建立连接。
+- 不重载 `/etc/pf.conf`、主规则、路由或 DNS，不全局禁用 PF；父锚点缺失、外部清规则、开机和恢复阶段仍可能有空窗。
+- 启用 PF 引用也可能激活系统里已加载但原先未启用的其他规则。
+- 不是完整代理断线保护或全网断网开关。应按预期路径对照验证，不能把单次超时当作拦截证明。
+
+## 验证与贡献
+
+```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+python3 -m unittest discover -s tests -v
+# macOS：不启动界面的状态逻辑测试
+python3 scripts/test_controller.py
+```
+
+测试使用模拟 PF、临时目录与文档地址，覆盖规则恢复、异常/信号退出、DNS/缓存错误、配置冲突、并发、原子写入、升级成功/失败及卸载。不会操作真实防火墙或连接目标网站，也不替代真实安装、睡眠唤醒及续航测试。
+
+请勿提交个人策略、凭据、真实网段、网络标识或本机原始报告。详见 [SECURITY.md](SECURITY.md)。MIT License。
+
+English: NetMoat is an experimental macOS PF egress policy framework with a Rust launchd service and native SwiftUI controller. It provides retained rules on unexpected exits, versioned configuration transactions, proxy-only exact-host DNS refresh, and independent modules. Optional Python tools handle temporary sessions and decoy verification only. It ships no service-specific policy and does not promise complete domain, application, or uninterrupted isolation.

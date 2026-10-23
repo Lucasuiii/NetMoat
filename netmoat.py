@@ -1,4 +1,4 @@
-"""macOS PF policies, decoy verification, and an opt-in startup service."""
+"""Optional macOS PF temporary-session and decoy verification tools."""
 import argparse
 from dataclasses import dataclass
 import hashlib
@@ -351,12 +351,6 @@ def main(argv=None):
             p.add_argument("--rollback-after", type=int, default=180)
     sub.add_parser("status")
     sub.add_parser("cleanup").add_argument("--state-dir", required=True)
-    service = sub.add_parser("service", help="Install and manage the optional startup service")
-    actions = service.add_subparsers(dest="service_action", required=True)
-    actions.add_parser("install").add_argument("--config", required=True)
-    actions.add_parser("configure").add_argument("--config", required=True)
-    for action in ["start", "stop", "status", "snapshot", "uninstall", "run"]:
-        actions.add_parser(action)
     args = parser.parse_args(argv)
     try:
         if args.action == "render":
@@ -368,12 +362,6 @@ def main(argv=None):
         def interrupted(signum, frame):
             raise KeyboardInterrupt()
         signal.signal(signal.SIGTERM, interrupted)
-        if args.action == "service":
-            # The installed launcher uses isolated Python; only add its own
-            # administrator-owned source directory, never the working directory.
-            sys.path.insert(0, str(Path(__file__).resolve().parent))
-            import netmoat_service
-            return netmoat_service.main(args)
         if args.action == "status":
             states = []
             for folder in sorted(RUNTIME.glob(PREFIX + "*")):
