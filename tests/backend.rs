@@ -796,6 +796,9 @@ fn legacy_files(paths: &Paths) -> (Vec<u8>, Vec<u8>) {
 fn successful_upgrade_preserves_policy_and_removes_old_installed_backend() {
     let (_dir, paths) = fixture();
     legacy_files(&paths);
+    for name in ["netmoat.py.previous", "netmoat_service.py.previous"] {
+        atomic_write(&paths.home.join(name), b"# old backup", 0o600, true).unwrap();
+    }
     let original = fs::read(paths.home.join("policy.json")).unwrap();
     let runner = FakeRunner::default();
     {
@@ -814,6 +817,8 @@ fn successful_upgrade_preserves_policy_and_removes_old_installed_backend() {
         !paths.home.join("netmoat.py").exists() && !paths.home.join("netmoat_service.py").exists()
     );
     assert!(!paths.home.join("upgrade-backup").exists());
+    assert!(!paths.home.join("netmoat.py.previous").exists());
+    assert!(!paths.home.join("netmoat_service.py.previous").exists());
     assert!(!fs::read_to_string(&paths.plist).unwrap().contains("python"));
     assert!(!fs::read_to_string(&paths.launcher)
         .unwrap()
@@ -988,6 +993,38 @@ fn real_runner_enforces_timeout_and_output_limit() {
             .unwrap()
             .stdout,
         "ok\n"
+    );
+}
+#[test]
+fn real_runner_handles_inherited_blocked_sigchld() {
+    use std::os::unix::process::CommandExt;
+    use wait_timeout::ChildExt;
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command.args(["--exact", "real_runner_enforces_timeout_and_output_limit"]);
+    // Administrator authorization can pass a blocked SIGCHLD mask to the CLI.
+    // Change only the fixture child, never the parallel test process.
+    unsafe {
+        command.pre_exec(|| {
+            let mut signals: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut signals);
+            libc::sigaddset(&mut signals, libc::SIGCHLD);
+            let result = libc::pthread_sigmask(libc::SIG_BLOCK, &signals, std::ptr::null_mut());
+            if result == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::from_raw_os_error(result))
+            }
+        });
+    }
+    let mut child = command.spawn().unwrap();
+    let status = child.wait_timeout(Duration::from_secs(8)).unwrap();
+    if status.is_none() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+    assert!(
+        status.is_some_and(|s| s.success()),
+        "Blocked-signal fixture failed"
     );
 }
 #[test]

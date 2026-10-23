@@ -83,6 +83,8 @@ Installed binary, policy and private state are administrator owned. Privileged
 CLI accepts no executable-path or environment overrides. Child commands use
 absolute paths, clean environments, bounded output and deadlines. Service CLI
 requires macOS and euid 0. Never execute an unreviewed checkout as administrator.
+Child completion uses bounded polling rather than SIGCHLD delivery: macOS
+administrator authorization can inherit a blocked signal mask into the CLI.
 
 Upgrade validates existing policy and saves job/launcher/manifest/previous native
 binary. It unloads the old job, waits for its lifetime lock, stages the new

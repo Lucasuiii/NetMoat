@@ -8,9 +8,8 @@ use std::os::unix::{
     process::CommandExt,
 };
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use wait_timeout::ChildExt;
 
 pub const LABEL: &str = "io.github.lucasuiii.netmoat";
 pub const ANCHOR: &str = "com.apple/netmoat_0000000000000000";
@@ -179,6 +178,22 @@ pub trait Runner: Send + Sync {
 }
 pub struct RealRunner;
 
+fn wait_child(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
+    // Authorization helpers may block SIGCHLD in the inherited signal mask.
+    // Poll waitpid through std instead of depending on delivery of that signal.
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(10)));
+    }
+}
+
 fn drain(reader: impl Read) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     reader.take(1_048_577).read_to_end(&mut bytes)?;
@@ -203,7 +218,7 @@ impl Runner for RealRunner {
             .stderr(Stdio::from(log.try_clone()?))
             .process_group(0)
             .spawn()?;
-        let status = child.wait_timeout(Duration::from_secs(10));
+        let status = wait_child(&mut child, Duration::from_secs(10));
         if !matches!(status, Ok(Some(_))) {
             unsafe {
                 libc::kill(-(child.id() as i32), libc::SIGKILL);
@@ -234,7 +249,7 @@ impl Runner for RealRunner {
         let err = child.stderr.take().context("Missing stderr")?;
         let out = std::thread::spawn(move || drain(out));
         let err = std::thread::spawn(move || drain(err));
-        let waited = child.wait_timeout(timeout);
+        let waited = wait_child(&mut child, timeout);
         let timed_out = !matches!(waited, Ok(Some(_)));
         if timed_out {
             // This process group was created above and contains only this command.

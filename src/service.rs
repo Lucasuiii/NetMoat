@@ -464,6 +464,8 @@ impl Backend<'_> {
             !backup.exists(),
             "Unfinished upgrade backup exists; inspect it before retrying"
         );
+        let was_loaded = self.loaded()?;
+        let was_disabled = self.paths.home.join("disabled").exists();
         self.paths.mkdir(&backup)?;
         for (name, path) in [
             ("job.plist", &self.paths.plist),
@@ -486,8 +488,6 @@ impl Backend<'_> {
                 true,
             )?;
         }
-        let was_loaded = self.loaded()?;
-        let was_disabled = self.paths.home.join("disabled").exists();
         let attempt = (|| -> Result<()> {
             // Legacy Python may clean its rules here; migration has a documented gap.
             if was_loaded {
@@ -561,7 +561,12 @@ impl Backend<'_> {
             bail!("Upgrade failed; previous launch configuration restored, backup retained: {error:#}");
         }
         // Remove old installed Python backend only after successful native verification.
-        for name in ["netmoat.py", "netmoat_service.py"] {
+        for name in [
+            "netmoat.py",
+            "netmoat_service.py",
+            "netmoat.py.previous",
+            "netmoat_service.py.previous",
+        ] {
             let path = self.paths.home.join(name);
             if path.exists() {
                 self.paths.secure(&path, false)?;
